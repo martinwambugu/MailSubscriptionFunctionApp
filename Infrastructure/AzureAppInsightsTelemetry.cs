@@ -7,70 +7,65 @@ using System.Collections.Generic;
 namespace MailSubscriptionFunctionApp.Infrastructure
 {
     /// <summary>  
-    /// Application Insights telemetry implementation for tracking events, exceptions, traces, metrics, and dependencies.  
+    /// Azure Application Insights implementation of telemetry abstraction.  
     /// </summary>  
     public class AzureAppInsightsTelemetry : ICustomTelemetry
     {
         private readonly TelemetryClient _telemetryClient;
 
-        /// <summary>  
-        /// Initializes a new instance of the <see cref="AzureAppInsightsTelemetry"/> class.  
-        /// </summary>  
-        /// <param name="telemetryClient">Application Insights telemetry client.</param>  
         public AzureAppInsightsTelemetry(TelemetryClient telemetryClient)
         {
             _telemetryClient = telemetryClient ?? throw new ArgumentNullException(nameof(telemetryClient));
         }
 
-        /// <inheritdoc/>  
+        /// <inheritdoc />  
         public void TrackEvent(string eventName, IDictionary<string, string>? properties = null)
         {
             _telemetryClient.TrackEvent(eventName, properties);
         }
 
-        /// <inheritdoc/>  
+        /// <inheritdoc />  
         public void TrackException(Exception exception, IDictionary<string, string>? properties = null)
         {
             _telemetryClient.TrackException(exception, properties);
         }
 
-        /// <inheritdoc/>  
+        /// <inheritdoc />  
         public void TrackTrace(string message, SeverityLevel severityLevel, IDictionary<string, string>? properties = null)
         {
             _telemetryClient.TrackTrace(message, severityLevel, properties);
         }
 
-        /// <inheritdoc/>  
+        /// <inheritdoc />  
         public void TrackMetric(string name, double value, IDictionary<string, string>? properties = null)
         {
-            if (properties != null)
+            var metric = _telemetryClient.GetMetric(name);
+            metric.TrackValue(value);
+
+            // If you need to attach custom properties, use TrackMetric directly:  
+            if (properties != null && properties.Count > 0)
             {
-                var metricTelemetry = new MetricTelemetry(name, value);
-                foreach (var kvp in properties)
-                {
-                    metricTelemetry.Properties[kvp.Key] = kvp.Value;
-                }
-                _telemetryClient.TrackMetric(metricTelemetry);
-            }
-            else
-            {
-                _telemetryClient.GetMetric(name).TrackValue(value);
+                _telemetryClient.TrackMetric(name, value, properties);
             }
         }
 
-        /// <inheritdoc/>  
-        public void TrackDependency(string dependencyType, string dependencyName, DateTime startTime, TimeSpan duration, bool success)
+        /// <inheritdoc />  
+        public void TrackDependency(
+            string dependencyType,
+            string dependencyName,
+            DateTime startTime,
+            TimeSpan duration,
+            bool success)
         {
-            var dependencyTelemetry = new DependencyTelemetry
-            {
-                Type = dependencyType,
-                Name = dependencyName,
-                Timestamp = startTime,
-                Duration = duration,
-                Success = success
-            };
-
-            _telemetryClient.TrackDependency(dependencyTelemetry);
+            _telemetryClient.TrackDependency(
+                dependencyTypeName: dependencyType,
+                target: dependencyName,
+                dependencyName: dependencyName,
+                data: null,
+                startTime: startTime,
+                duration: duration,
+                resultCode: success ? "200" : "500",
+                success: success);
         }
     }
 }

@@ -13,6 +13,6 @@ namespace MailSubscriptionFunctionApp.Interfaces
         /// </summary>  
         /// <param name="userId">Azure AD user ID.</param>  
         /// <returns>Newly created <see cref="MailSubscription"/> instance.</returns>  
-        Task<MailSubscription> CreateMailSubscriptionAsync(string userId);
+        Task<MailSubscription> CreateMailSubscriptionAsync(string userId, CancellationToken cancellationToken = default); 
     }
 }

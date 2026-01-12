@@ -13,64 +13,114 @@ namespace MailSubscriptionFunctionApp.Infrastructure
     /// </summary>  
     public class OpenApiConfig : IOpenApiConfigurationOptions
     {
-        private readonly IConfiguration _configuration;
-
-        public OpenApiConfig(IConfiguration configuration)
+        /// <summary>  
+        /// Parameterless constructor required by OpenAPI extension for reflection-based instantiation.  
+        /// </summary>  
+        public OpenApiConfig()
         {
-            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
-
-            // Pull values from configuration  
-            var apiTitle = configuration["OpenApi:Title"] ?? "FA Function for LOS API";
-            var apiVersion = configuration["OpenApi:Version"] ?? "1.0.0";
-            var apiDescription = configuration["OpenApi:Description"] ?? "API documentation for FA Function";
-            var contactName = configuration["OpenApi:ContactName"] ?? "Creodata Solutions Ltd";
-            var contactEmail = configuration["OpenApi:ContactEmail"] ?? "support@creodata.com";
-
-            Info = new OpenApiInfo()
+            // ✅ Use default values when instantiated via reflection  
+            Info = new OpenApiInfo
             {
-                Title = apiTitle,
-                Version = apiVersion,
-                Description = apiDescription,
-                Contact = new OpenApiContact()
+                Title = "Mail Journaling User Functions API",
+                Version = "1.0.0",
+                Description = "API documentation for Mail Journaling User Functions",
+                Contact = new OpenApiContact
                 {
-                    Name = contactName,
-                    Email = contactEmail
+                    Name = "Creodata Solutions Ltd",
+                    Email = "support@creodata.com"
                 }
             };
 
 #if DEBUG
-            Servers = new List<OpenApiServer> 
+            Servers = new List<OpenApiServer>
             {
-                new OpenApiServer { Url = "http://localhost:7149", Description = "Local Development" },
+                new OpenApiServer { Url = "http://localhost:7125", Description = "Local Development" }
             };
+            ForceHttp = true;
+            ForceHttps = false;
 #else
-             Servers = new List<OpenApiServer> 
-             {  
-                new OpenApiServer { Url = "https://MailSubscriptionFunctionApp.azurewebsites.net", Description = "Azure Deployment" }
-             };  
+            Servers = new List<OpenApiServer>  
+            {  
+                new OpenApiServer { Url = "https://mailjournalinguserfunctionsapp.azurewebsites.net", Description = "Azure Production" }  
+            };  
+            ForceHttp = false;  
+            ForceHttps = true;  
 #endif
 
-            // ✅ Ensure SecurityDocumentFilter is registered so security schemes are injected  
+            // ✅ Register document filters  
             DocumentFilters = new List<IDocumentFilter>
             {
                 new SecurityDocumentFilter()
             };
         }
 
-        public OpenApiInfo Info { get; set; }
-        public OpenApiVersionType OpenApiVersion { get; set; } = OpenApiVersionType.V3;
-        public bool IncludeRequestingHostName { get; set; } = true;
-        public List<OpenApiServer> Servers { get; set; }
+        /// <summary>  
+        /// Constructor with configuration injection (used when registered in DI container).  
+        /// </summary>  
+        /// <param name="configuration">Application configuration.</param>  
+        public OpenApiConfig(IConfiguration configuration) : this()
+        {
+            if (configuration == null)
+                return;
+
+            // ✅ Override defaults with configuration values if available  
+            var apiTitle = configuration["OpenApi:Title"];
+            var apiVersion = configuration["OpenApi:Version"];
+            var apiDescription = configuration["OpenApi:Description"];
+            var contactName = configuration["OpenApi:ContactName"];
+            var contactEmail = configuration["OpenApi:ContactEmail"];
+
+            if (!string.IsNullOrWhiteSpace(apiTitle))
+                Info.Title = apiTitle;
+
+            if (!string.IsNullOrWhiteSpace(apiVersion))
+                Info.Version = apiVersion;
+
+            if (!string.IsNullOrWhiteSpace(apiDescription))
+                Info.Description = apiDescription;
+
+            if (!string.IsNullOrWhiteSpace(contactName))
+                Info.Contact.Name = contactName;
+
+            if (!string.IsNullOrWhiteSpace(contactEmail))
+                Info.Contact.Email = contactEmail;
+
+            // ✅ Override server URLs from configuration if provided  
+            var localServerUrl = configuration["OpenApi:LocalServerUrl"];
+            var productionServerUrl = configuration["OpenApi:ProductionServerUrl"];
 
 #if DEBUG
-        public bool ForceHttp { get; set; } = true;
-        public bool ForceHttps { get; set; } = false;
+            if (!string.IsNullOrWhiteSpace(localServerUrl))
+            {
+                Servers = new List<OpenApiServer>
+                {
+                    new OpenApiServer { Url = localServerUrl, Description = "Local Development" }
+                };
+            }
 #else
-    public bool ForceHttp { get; set; } = false;  
-    public bool ForceHttps { get; set; } = true;  
+            if (!string.IsNullOrWhiteSpace(productionServerUrl))  
+            {  
+                Servers = new List<OpenApiServer>  
+                {  
+                    new OpenApiServer { Url = productionServerUrl, Description = "Azure Production" }  
+                };  
+            }  
 #endif
+        }
 
-        public List<IDocumentFilter> DocumentFilters { get; set; } = new List<IDocumentFilter>();
+        public OpenApiInfo Info { get; set; }
+
+        public OpenApiVersionType OpenApiVersion { get; set; } = OpenApiVersionType.V3;
+
+        public bool IncludeRequestingHostName { get; set; } = true;
+
+        public List<OpenApiServer> Servers { get; set; }
+
+        public bool ForceHttp { get; set; }
+
+        public bool ForceHttps { get; set; }
+
+        public List<IDocumentFilter> DocumentFilters { get; set; }
 
         /// <summary>  
         /// Post-process the generated OpenAPI document to inject security schemes.  
@@ -78,59 +128,78 @@ namespace MailSubscriptionFunctionApp.Infrastructure
         /// </summary>  
         public void PostProcess(OpenApiDocument document)
         {
-            if (document == null) throw new ArgumentNullException(nameof(document));
+            if (document == null)
+                throw new ArgumentNullException(nameof(document));
 
             document.Components ??= new OpenApiComponents();
             document.Components.SecuritySchemes ??= new Dictionary<string, OpenApiSecurityScheme>();
 
-            // API Key Scheme  
-            var apiKeyScheme = new OpenApiSecurityScheme
+            // ✅ API Key Scheme  
+            if (!document.Components.SecuritySchemes.ContainsKey("ApiKeyAuth"))
             {
-                Type = SecuritySchemeType.ApiKey,
-                Name = "x-api-key",
-                In = ParameterLocation.Header,
-                Description = "API Key authentication",
-                Reference = new OpenApiReference
+                var apiKeyScheme = new OpenApiSecurityScheme
                 {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "ApiKeyAuth"
-                }
-            };
-            document.Components.SecuritySchemes["ApiKeyAuth"] = apiKeyScheme;
+                    Type = SecuritySchemeType.ApiKey,
+                    Name = "x-api-key",
+                    In = ParameterLocation.Header,
+                    Description = "API Key authentication using the `x-api-key` header",
+                    Reference = new OpenApiReference
+                    {
+                        Type = ReferenceType.SecurityScheme,
+                        Id = "ApiKeyAuth"
+                    }
+                };
+                document.Components.SecuritySchemes["ApiKeyAuth"] = apiKeyScheme;
+            }
 
-            // Bearer Scheme  
-            var bearerScheme = new OpenApiSecurityScheme
+            // ✅ Bearer Scheme  
+            if (!document.Components.SecuritySchemes.ContainsKey("BearerAuth"))
             {
-                Type = SecuritySchemeType.Http,
-                Scheme = "bearer",
-                BearerFormat = "JWT",
-                Description = "JWT Bearer authentication",
-                Reference = new OpenApiReference
+                var bearerScheme = new OpenApiSecurityScheme
                 {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "BearerAuth"
-                }
-            };
-            document.Components.SecuritySchemes["BearerAuth"] = bearerScheme;
+                    Type = SecuritySchemeType.Http,
+                    Scheme = "bearer",
+                    BearerFormat = "JWT",
+                    Description = "JWT Bearer authentication (Azure AD)",
+                    Reference = new OpenApiReference
+                    {
+                        Type = ReferenceType.SecurityScheme,
+                        Id = "BearerAuth"
+                    }
+                };
+                document.Components.SecuritySchemes["BearerAuth"] = bearerScheme;
+            }
 
-            // Root-level security requirements (applies to all operations)  
+            // ✅ Root-level security requirements  
             document.SecurityRequirements ??= new List<OpenApiSecurityRequirement>();
 
-            document.SecurityRequirements.Add(new OpenApiSecurityRequirement
-            {
-                [new OpenApiSecurityScheme
-                {
-                    Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "ApiKeyAuth" }
-                }] = new List<string>()
-            });
+            var hasApiKeyReq = document.SecurityRequirements
+                .Any(req => req.Keys.Any(k => k.Reference?.Id == "ApiKeyAuth"));
 
-            document.SecurityRequirements.Add(new OpenApiSecurityRequirement
+            if (!hasApiKeyReq)
             {
-                [new OpenApiSecurityScheme
+                document.SecurityRequirements.Add(new OpenApiSecurityRequirement
                 {
-                    Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "BearerAuth" }
-                }] = new List<string>()
-            });
+                    [new OpenApiSecurityScheme
+                    {
+                        Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "ApiKeyAuth" }
+                    }] = new List<string>()
+                });
+            }
+
+            var hasBearerReq = document.SecurityRequirements
+                .Any(req => req.Keys.Any(k => k.Reference?.Id == "BearerAuth"));
+
+            if (!hasBearerReq)
+            {
+                document.SecurityRequirements.Add(new OpenApiSecurityRequirement
+                {
+                    [new OpenApiSecurityScheme
+                    {
+                        Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "BearerAuth" }
+                    }] = new List<string>()
+                });
+            }
         }
     }
 }

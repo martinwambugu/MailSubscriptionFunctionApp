@@ -12,6 +12,6 @@ namespace MailSubscriptionFunctionApp.Interfaces
         /// Saves a mail subscription record to the database.  
         /// </summary>  
         /// <param name="subscription">Subscription object to persist.</param>  
-        Task SaveSubscriptionAsync(MailSubscription subscription);
+        Task SaveSubscriptionAsync(MailSubscription subscription, CancellationToken cancellationToken = default);
     }
 }

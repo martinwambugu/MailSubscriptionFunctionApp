@@ -9,29 +9,34 @@ using System.Threading.Tasks;
 
 namespace MailSubscriptionFunctionApp.Infrastructure
 {
+    /// <summary>  
+    /// No-operation telemetry implementation for on-premises scenarios.  
+    /// Logs telemetry calls locally without sending to external systems.  
+    /// </summary>  
     public class NoOpTelemetry : ICustomTelemetry
     {
         private readonly ILogger<NoOpTelemetry> _logger;
 
         public NoOpTelemetry(ILogger<NoOpTelemetry> logger)
         {
-            _logger = logger;
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
+        /// <inheritdoc />  
         public void TrackEvent(string eventName, IDictionary<string, string>? properties = null)
         {
-            // Just log locally for now — could be extended to send to OTLP  
-            _logger.LogInformation("Telemetry event: {EventName} {@Properties}", eventName, properties);
+            _logger.LogInformation("📊 Telemetry Event: {EventName} {@Properties}", eventName, properties);
         }
 
+        /// <inheritdoc />  
         public void TrackException(Exception exception, IDictionary<string, string>? properties = null)
         {
-            _logger.LogError(exception, "Telemetry Exception {@Properties}", properties);
+            _logger.LogError(exception, "❌ Telemetry Exception {@Properties}", properties);
         }
 
+        /// <inheritdoc />  
         public void TrackTrace(string message, SeverityLevel severityLevel, IDictionary<string, string>? properties = null)
         {
-            // Map Application Insights SeverityLevel to ILogger log level  
             var logLevel = severityLevel switch
             {
                 SeverityLevel.Critical => LogLevel.Critical,
@@ -42,35 +47,30 @@ namespace MailSubscriptionFunctionApp.Infrastructure
                 _ => LogLevel.Information
             };
 
-            _logger.Log(logLevel, "Telemetry Trace: {Message} {@Properties}", message, properties);
+            _logger.Log(logLevel, "📝 Telemetry Trace: {Message} {@Properties}", message, properties);
         }
 
-        public void TrackMetric(string name, double value, IDictionary<string, string> properties = null)
+        /// <inheritdoc />  
+        public void TrackMetric(string name, double value, IDictionary<string, string>? properties = null)
         {
-            // Log metric information instead of sending telemetry  
-            if (properties != null)
-            {
-                _logger.LogInformation("Telemetry Metric: {Name} = {Value} {@Properties}", name, value, properties);
-            }
-            else
-            {
-                _logger.LogInformation("Telemetry Metric: {Name} = {Value}", name, value);
-            }
+            _logger.LogInformation("📈 Telemetry Metric: {MetricName} = {Value} {@Properties}",
+                name, value, properties);
         }
 
-        /// <summary>  
-        /// Tracks a dependency (e.g., Business Central API, SQL query).  
-        /// </summary>  
-        public void TrackDependency(string dependencyType, string dependencyName, DateTime startTime, TimeSpan duration, bool success)
+        /// <inheritdoc />  
+        public void TrackDependency(
+            string dependencyType,
+            string dependencyName,
+            DateTime startTime,
+            TimeSpan duration,
+            bool success)
         {
-            // No Application Insights TelemetryClient here—just log locally  
             _logger.LogInformation(
-                "Telemetry Dependency: {Type} - {Name} | Success: {Success} | Duration: {Duration}ms | Timestamp: {Timestamp}",
+                "🔗 Telemetry Dependency: {DependencyType}/{DependencyName} | Duration: {Duration}ms | Success: {Success}",
                 dependencyType,
                 dependencyName,
-                success,
                 duration.TotalMilliseconds,
-                startTime);
+                success);
         }
     }
 }
