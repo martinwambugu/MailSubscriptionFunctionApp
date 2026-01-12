@@ -92,7 +92,7 @@ namespace MailSubscriptionFunctionApp.Services
             try
             {
                 // ✅ Use async connection creation  
-                await using var conn = await _dbFactory.CreateConnectionAsync(cancellationToken);
+                using var conn = await _dbFactory.CreateConnectionAsync(cancellationToken);
 
                 // ✅ Use CommandDefinition for proper cancellation support  
                 var command = new CommandDefinition(
