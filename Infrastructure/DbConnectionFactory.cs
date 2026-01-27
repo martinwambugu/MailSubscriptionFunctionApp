@@ -75,8 +75,8 @@ namespace MailSubscriptionFunctionApp.Infrastructure
 
                 // Reliability settings  
                 KeepAlive = 30,                     // 30 seconds keep-alive  
-                TcpKeepAlive = true,                // Enable TCP keep-alive  
-                TcpKeepAliveInterval = 10,          // 10 seconds TCP keep-alive interval  
+                //TcpKeepAlive = true,                // Enable TCP keep-alive  
+                //TcpKeepAliveInterval = 10,          // 10 seconds TCP keep-alive interval  
 
                 // Security settings  
                 SslMode = SslMode.Require,          // ✅ Require SSL/TLS encryption  
