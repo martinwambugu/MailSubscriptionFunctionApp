@@ -47,7 +47,7 @@ namespace MailSubscriptionFunctionApp.Functions.Subscriptions
         [OpenApiResponseWithBody(HttpStatusCode.OK,"application/json",typeof(object),Description = "Subscription created successfully.")]
         [OpenApiResponseWithBody(HttpStatusCode.BadRequest,"application/json",typeof(object),Description = "Invalid input.")]
         [OpenApiResponseWithBody(HttpStatusCode.InternalServerError,"application/json",typeof(object),Description = "Internal error.")]
-        public async Task<HttpResponseData> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = "subscriptions")] HttpRequestData req)
+        public async Task<HttpResponseData> Run([HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "subscriptions")] HttpRequestData req)
         {
             LogStart(nameof(CreateMailSubscription));
 
