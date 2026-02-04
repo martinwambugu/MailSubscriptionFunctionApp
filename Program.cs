@@ -17,8 +17,24 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 using System;
 using System.IO;
+using System.Net;
+using System.Net.Http;
 
-//   
+// ✅ CRITICAL: Force TLS 1.2+ BEFORE any HTTP calls  
+// This must be the FIRST executable code in the application  
+ServicePointManager.SecurityProtocol =
+    SecurityProtocolType.Tls12 |
+    SecurityProtocolType.Tls13;
+
+// ✅ Configure default HTTP connection settings  
+ServicePointManager.DefaultConnectionLimit = 100;
+ServicePointManager.Expect100Continue = false;
+ServicePointManager.CheckCertificateRevocationList = false;
+
+// ✅ Set .NET Core environment variables for HTTP behavior  
+Environment.SetEnvironmentVariable("DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER", "0");
+Environment.SetEnvironmentVariable("DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2SUPPORT", "1");
+
 // -----------------------------------------------------  
 // Load Configuration  
 // -----------------------------------------------------  
@@ -30,14 +46,12 @@ var configuration = new ConfigurationBuilder()
 
 string telemetryBackend = configuration["TELEMETRY_BACKEND"]?.ToLowerInvariant() ?? "azure";
 
-//   
 // -----------------------------------------------------  
 // Build Host  
 // -----------------------------------------------------  
 var host = new HostBuilder()
     .ConfigureFunctionsWebApplication((context, builder) =>
     {
-        //   
         // -----------------------------------------------------  
         // CORS CONFIGURATION ✅  
         // -----------------------------------------------------  
@@ -52,7 +66,6 @@ var host = new HostBuilder()
             });
         });
 
-        //   
         // -----------------------------------------------------  
         // Logging Pipeline with OpenTelemetry  
         // -----------------------------------------------------  
@@ -84,7 +97,6 @@ var host = new HostBuilder()
             });
         });
 
-        //   
         // -----------------------------------------------------  
         // Metrics & Tracing with OpenTelemetry  
         // -----------------------------------------------------  
@@ -138,7 +150,6 @@ var host = new HostBuilder()
             }
         });
 
-        //   
         // -----------------------------------------------------  
         // Telemetry Abstraction (ICustomTelemetry)  
         // -----------------------------------------------------  
@@ -154,48 +165,82 @@ var host = new HostBuilder()
             builder.Services.AddSingleton<ICustomTelemetry, NoOpTelemetry>();
         }
 
-        //   
         // -----------------------------------------------------  
         // Infrastructure Layer Registrations  
         // -----------------------------------------------------  
         builder.Services.AddScoped<IDbConnectionFactory, DbConnectionFactory>();
 
-        //   
         // -----------------------------------------------------  
         // Domain Service Registrations  
         // -----------------------------------------------------  
         builder.Services.AddScoped<IGraphSubscriptionClient, GraphSubscriptionService>();
         builder.Services.AddScoped<IMailSubscriptionRepository, MailSubscriptionService>();
 
-        // Add HttpClientFactory  
+        // ✅ Configure HttpClient factory with proper TLS settings for Graph API  
+        builder.Services.AddHttpClient("GraphClient", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(100);
+            client.DefaultRequestHeaders.Add("User-Agent", "MailSubscriptionFunctionApp/1.0");
+        })
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            // ✅ Force TLS 1.2 and TLS 1.3  
+            SslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                          System.Security.Authentication.SslProtocols.Tls13,
+
+            // ✅ Production: Use default certificate validation  
+            // For testing only: uncomment line below (NOT RECOMMENDED for production)  
+            // ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,  
+
+            MaxConnectionsPerServer = 100,
+            UseProxy = false,
+            AllowAutoRedirect = true,
+            AutomaticDecompression = System.Net.DecompressionMethods.GZip |
+                                    System.Net.DecompressionMethods.Deflate
+        })
+        .AddStandardResilienceHandler(options =>
+        {
+            // ✅ Configure retry policy  
+            options.Retry.MaxRetryAttempts = 3;
+            options.Retry.Delay = TimeSpan.FromSeconds(1);
+            options.Retry.BackoffType = Polly.DelayBackoffType.Exponential;
+
+            // ✅ Configure circuit breaker  
+            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60); // Fixed from 30s  
+            options.CircuitBreaker.FailureRatio = 0.5;
+            options.CircuitBreaker.MinimumThroughput = 10;
+            options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(30);
+
+            // ✅ Configure timeout  
+            options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(30);
+            options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(100);
+        });
+
+        // ✅ Add default HttpClient for other services  
         builder.Services.AddHttpClient();
 
-        //   
         // -----------------------------------------------------  
         // Middleware Pipeline  
         // -----------------------------------------------------  
         builder.Services.AddCustomMiddlewares(configuration);
         builder.UseCustomMiddlewares(configuration);
 
-        //   
         // -----------------------------------------------------  
         // OpenAPI / Swagger  
         // -----------------------------------------------------  
         builder.Services.AddSingleton<IOpenApiConfigurationOptions, OpenApiConfig>();
     })
-    //   
     // ✅ Ensure CORS middleware is active in Functions runtime  
-    //   
     .ConfigureServices(services =>
     {
         services.AddCors();
-        // Add HttpClientFactory for dependent services  
-        services.AddHttpClient();
+
+        // ✅ Add MemoryCache for GraphServiceClient caching  
+        services.AddMemoryCache();
     })
     .ConfigureOpenApi()
     .Build();
 
-//   
 // -----------------------------------------------------  
 // Run Host  
 // -----------------------------------------------------  

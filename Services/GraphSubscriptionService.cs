@@ -9,6 +9,7 @@ using Microsoft.Graph.Models;
 using Microsoft.Graph.Models.ODataErrors;
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,7 +18,7 @@ namespace MailSubscriptionFunctionApp.Services
 {
     /// <summary>  
     /// Handles Microsoft Graph API interactions for creating mail subscriptions.  
-    /// Implements token caching and secure client state generation.  
+    /// Implements token caching, TLS 1.2+ enforcement, and secure client state generation.  
     /// </summary>  
     /// <remarks>  
     /// <para>  
@@ -27,6 +28,11 @@ namespace MailSubscriptionFunctionApp.Services
     /// </para>  
     /// <para>  
     /// <b>Security:</b> Client state values are generated using cryptographically secure random bytes.  
+    /// TLS 1.2+ is enforced for all Microsoft Graph API communications.  
+    /// </para>  
+    /// <para>  
+    /// <b>Resilience:</b> Includes connectivity testing, retry logic, and circuit breaker patterns  
+    /// via HttpClient factory configuration in Program.cs.  
     /// </para>  
     /// </remarks>  
     public class GraphSubscriptionService : IGraphSubscriptionClient
@@ -35,6 +41,7 @@ namespace MailSubscriptionFunctionApp.Services
         private readonly ILogger<GraphSubscriptionService> _logger;
         private readonly ICustomTelemetry _telemetry;
         private readonly IMemoryCache _tokenCache;
+        private readonly IHttpClientFactory _httpClientFactory;
 
         /// <summary>  
         /// Initializes a new instance of the <see cref="GraphSubscriptionService"/> class.  
@@ -43,12 +50,14 @@ namespace MailSubscriptionFunctionApp.Services
             IConfiguration config,
             ILogger<GraphSubscriptionService> logger,
             ICustomTelemetry telemetry,
-            IMemoryCache tokenCache)
+            IMemoryCache tokenCache,
+            IHttpClientFactory httpClientFactory)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _telemetry = telemetry ?? throw new ArgumentNullException(nameof(telemetry));
             _tokenCache = tokenCache ?? throw new ArgumentNullException(nameof(tokenCache));
+            _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
         }
 
         /// <inheritdoc/>  
@@ -59,6 +68,7 @@ namespace MailSubscriptionFunctionApp.Services
             ArgumentException.ThrowIfNullOrWhiteSpace(userId, nameof(userId));
 
             _logger.LogInformation("Creating Microsoft Graph subscription for UserId: {UserId}", userId);
+
             _telemetry.TrackEvent("GraphSubscription_Create_Start", new Dictionary<string, string>
             {
                 { "UserId", userId }
@@ -103,7 +113,7 @@ namespace MailSubscriptionFunctionApp.Services
 
                 return MapToMailSubscription(created, userId);
             }
-            catch (ODataError odataEx) // ✅ Correct exception type for Microsoft Graph SDK v5+  
+            catch (ODataError odataEx)
             {
                 var errorCode = odataEx.Error?.Code ?? "Unknown";
                 var errorMessage = odataEx.Error?.Message ?? odataEx.Message;
@@ -124,7 +134,27 @@ namespace MailSubscriptionFunctionApp.Services
                     $"Failed to create Graph subscription for user {userId}. Error: {errorMessage}",
                     odataEx);
             }
-            catch (ServiceException svcEx) // ✅ Fallback for older SDK versions  
+            catch (HttpRequestException httpEx)
+            {
+                _logger.LogError(
+                    httpEx,
+                    "❌ HTTP request failed for UserId: {UserId}. Message: {Message}",
+                    userId, httpEx.Message);
+
+                _telemetry.TrackException(httpEx, new Dictionary<string, string>
+                {
+                    { "Operation", "CreateMailSubscriptionAsync" },
+                    { "UserId", userId },
+                    { "ErrorType", "HttpRequestException" }
+                });
+
+                throw new InvalidOperationException(
+                    $"Network error while creating Graph subscription for user {userId}. " +
+                    $"Ensure outbound HTTPS connectivity to graph.microsoft.com is available. " +
+                    $"Error: {httpEx.Message}",
+                    httpEx);
+            }
+            catch (ServiceException svcEx)
             {
                 _logger.LogError(
                     svcEx,
@@ -138,11 +168,17 @@ namespace MailSubscriptionFunctionApp.Services
                     { "StatusCode", svcEx.ResponseStatusCode.ToString() }
                 });
 
-                throw;
+                throw new InvalidOperationException(
+                    $"Microsoft Graph service error for user {userId}. Status: {svcEx.ResponseStatusCode}",
+                    svcEx);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Unexpected error creating Graph subscription for UserId: {UserId}", userId);
+                _logger.LogError(
+                    ex,
+                    "❌ Unexpected error creating Graph subscription for UserId: {UserId}",
+                    userId);
+
                 _telemetry.TrackException(ex, new Dictionary<string, string>
                 {
                     { "Operation", "CreateMailSubscriptionAsync" },
@@ -154,10 +190,19 @@ namespace MailSubscriptionFunctionApp.Services
         }
 
         /// <summary>  
-        /// Gets or creates a cached <see cref="GraphServiceClient"/> instance.  
+        /// Gets or creates a cached <see cref="GraphServiceClient"/> instance with TLS 1.2+ enforcement.  
         /// </summary>  
         /// <remarks>  
+        /// <para>  
         /// The client is cached for 1 hour to avoid recreating authentication tokens on every request.  
+        /// </para>  
+        /// <para>  
+        /// Uses the named HttpClient "GraphClient" configured in Program.cs with:  
+        /// - TLS 1.2/1.3 enforcement  
+        /// - Retry policies (3 attempts with exponential backoff)  
+        /// - Circuit breaker (breaks after 50% failure rate over 60s window)  
+        /// - Timeout policies (30s per attempt, 100s total)  
+        /// </para>  
         /// </remarks>  
         private async Task<GraphServiceClient> GetOrCreateGraphClientAsync(
             CancellationToken cancellationToken)
@@ -167,11 +212,11 @@ namespace MailSubscriptionFunctionApp.Services
             // ✅ Check cache first  
             if (_tokenCache.TryGetValue(cacheKey, out GraphServiceClient? cachedClient) && cachedClient != null)
             {
-                _logger.LogDebug("Using cached GraphServiceClient instance.");
+                _logger.LogDebug("✅ Using cached GraphServiceClient instance.");
                 return cachedClient;
             }
 
-            _logger.LogDebug("Creating new GraphServiceClient instance...");
+            _logger.LogInformation("🔧 Creating new GraphServiceClient instance with TLS 1.2+ enforcement...");
 
             var clientId = _config["AzureAd:ClientId"]
                 ?? throw new InvalidOperationException("AzureAd:ClientId is not configured.");
@@ -184,19 +229,126 @@ namespace MailSubscriptionFunctionApp.Services
             // ✅ Create credential with client secret  
             var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
 
-            // ✅ Create Graph client with default scopes  
-            var graphClient = new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" });
+            // ✅ Get HttpClient from factory (configured with TLS 1.2+, retry, circuit breaker)  
+            var httpClient = _httpClientFactory.CreateClient("GraphClient");
+
+            // ✅ Test connectivity to Microsoft Graph before creating client  
+            await TestGraphConnectivityAsync(httpClient, cancellationToken);
+
+            // ✅ Create Graph client with configured HttpClient and credential  
+            var graphClient = new GraphServiceClient(
+                httpClient,
+                credential,
+                new[] { "https://graph.microsoft.com/.default" });
 
             // ✅ Cache for 1 hour  
             var cacheOptions = new MemoryCacheEntryOptions()
                 .SetAbsoluteExpiration(TimeSpan.FromHours(1))
-                .SetPriority(CacheItemPriority.High);
+                .SetPriority(CacheItemPriority.High)
+                .RegisterPostEvictionCallback((key, value, reason, state) =>
+                {
+                    _logger.LogInformation(
+                        "🗑️ GraphServiceClient evicted from cache. Reason: {Reason}",
+                        reason);
+                });
 
             _tokenCache.Set(cacheKey, graphClient, cacheOptions);
 
-            _logger.LogInformation("✅ New GraphServiceClient created and cached for 1 hour.");
+            _logger.LogInformation(
+                "✅ New GraphServiceClient created and cached for 1 hour. " +
+                "TLS 1.2+ enforced, retry/circuit breaker policies active.");
 
             return graphClient;
+        }
+
+        /// <summary>  
+        /// Tests connectivity to Microsoft Graph API before creating the client.  
+        /// </summary>  
+        /// <remarks>  
+        /// This pre-flight check helps identify network/TLS issues early with better error messages.  
+        /// </remarks>  
+        private async Task TestGraphConnectivityAsync(
+            HttpClient httpClient,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                _logger.LogInformation("🔍 Testing connectivity to Microsoft Graph API (graph.microsoft.com)...");
+
+                var testRequest = new HttpRequestMessage(HttpMethod.Get, "https://graph.microsoft.com/v1.0");
+                var testResponse = await httpClient.SendAsync(testRequest, cancellationToken);
+
+                _logger.LogInformation(
+                    "✅ Connectivity test successful. Status: {StatusCode} ({ReasonPhrase})",
+                    (int)testResponse.StatusCode,
+                    testResponse.ReasonPhrase);
+
+                _telemetry.TrackEvent("GraphConnectivity_Test_Success", new Dictionary<string, string>
+                {
+                    { "StatusCode", ((int)testResponse.StatusCode).ToString() },
+                    { "Endpoint", "graph.microsoft.com" }
+                });
+            }
+            catch (HttpRequestException httpEx)
+            {
+                _logger.LogError(
+                    httpEx,
+                    "❌ Connectivity test to graph.microsoft.com FAILED. " +
+                    "Error: {Message}. " +
+                    "Possible causes: Network firewall blocking HTTPS, TLS version mismatch, DNS resolution failure.",
+                    httpEx.Message);
+
+                _telemetry.TrackException(httpEx, new Dictionary<string, string>
+                {
+                    { "Operation", "TestGraphConnectivityAsync" },
+                    { "Endpoint", "graph.microsoft.com" },
+                    { "ErrorType", "HttpRequestException" }
+                });
+
+                throw new InvalidOperationException(
+                    "Cannot reach Microsoft Graph API (graph.microsoft.com). " +
+                    "Please verify: " +
+                    "1) Outbound HTTPS (port 443) is allowed, " +
+                    "2) DNS can resolve graph.microsoft.com, " +
+                    "3) TLS 1.2+ is enabled, " +
+                    "4) No proxy/firewall blocking Microsoft endpoints. " +
+                    $"Error: {httpEx.Message}",
+                    httpEx);
+            }
+            catch (TaskCanceledException tcEx) when (tcEx.InnerException is TimeoutException)
+            {
+                _logger.LogError(
+                    tcEx,
+                    "❌ Connectivity test to graph.microsoft.com TIMED OUT. " +
+                    "Network latency too high or endpoint unreachable.");
+
+                _telemetry.TrackException(tcEx, new Dictionary<string, string>
+                {
+                    { "Operation", "TestGraphConnectivityAsync" },
+                    { "ErrorType", "Timeout" }
+                });
+
+                throw new InvalidOperationException(
+                    "Timeout while testing connectivity to Microsoft Graph API. " +
+                    "Check network latency and firewall rules.",
+                    tcEx);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "❌ Unexpected error during connectivity test to graph.microsoft.com: {Message}",
+                    ex.Message);
+
+                _telemetry.TrackException(ex, new Dictionary<string, string>
+                {
+                    { "Operation", "TestGraphConnectivityAsync" }
+                });
+
+                throw new InvalidOperationException(
+                    $"Unexpected error testing Microsoft Graph connectivity: {ex.Message}",
+                    ex);
+            }
         }
 
         /// <summary>  
