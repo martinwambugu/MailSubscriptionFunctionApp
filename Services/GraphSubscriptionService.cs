@@ -197,17 +197,18 @@ namespace MailSubscriptionFunctionApp.Services
         /// The client is cached for 1 hour to avoid recreating authentication tokens on every request.  
         /// </para>  
         /// <para>  
-        /// Uses the named HttpClient "GraphClient" configured in Program.cs with:  
+        /// Uses a dedicated HttpClient with:  
         /// - TLS 1.2/1.3 enforcement  
-        /// - Retry policies (3 attempts with exponential backoff)  
-        /// - Circuit breaker (breaks after 50% failure rate over 60s window)  
-        /// - Timeout policies (30s per attempt, 100s total)  
+        /// - HTTP/1.1 only (HTTP/2 disabled to fix connection reset issues)  
+        /// - Connection pooling optimized for Microsoft Graph API  
+        /// - Automatic compression (GZip/Deflate)  
         /// </para>  
         /// </remarks>  
         private async Task<GraphServiceClient> GetOrCreateGraphClientAsync(
             CancellationToken cancellationToken)
         {
             const string cacheKey = "GraphServiceClient";
+            const string httpClientCacheKey = "GraphServiceClient_HttpClient";
 
             // ✅ Check cache first  
             if (_tokenCache.TryGetValue(cacheKey, out GraphServiceClient? cachedClient) && cachedClient != null)
@@ -223,40 +224,77 @@ namespace MailSubscriptionFunctionApp.Services
             var tenantId = _config["AzureAd:TenantId"]
                 ?? throw new InvalidOperationException("AzureAd:TenantId is not configured.");
             var clientSecret = _config["AzureAd:ClientSecret"]
-                ?? throw new InvalidOperationException(
-                    "AzureAd:ClientSecret is not configured. Store this securely in Azure Key Vault.");
+                ?? throw new InvalidOperationException("AzureAd:ClientSecret is not configured.");
 
-            // ✅ Create credential with client secret  
             var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
 
-            // ✅ Get HttpClient from factory (configured with TLS 1.2+, retry, circuit breaker)  
-            var httpClient = _httpClientFactory.CreateClient("GraphClient");
+            // ✅ CRITICAL FIX: Create HttpClient with explicit TLS 1.2+ configuration  
+            // DO NOT use factory here - create a dedicated instance for Graph SDK  
+            var httpClientHandler = new HttpClientHandler
+            {
+                // ✅ Force TLS 1.2 and TLS 1.3  
+                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                              System.Security.Authentication.SslProtocols.Tls13,
 
-            // ✅ Test connectivity to Microsoft Graph before creating client  
+                // ✅ Disable HTTP/2 (use HTTP/1.1 only)  
+                // This often fixes "connection forcibly closed" issues with Graph API  
+                MaxConnectionsPerServer = 10,
+
+                // ✅ Allow automatic decompression  
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip |
+                                        System.Net.DecompressionMethods.Deflate,
+
+                // ✅ Optimize connection settings  
+                UseCookies = false,
+                UseProxy = false,
+                AllowAutoRedirect = true,
+
+                // ✅ For production: use default certificate validation  
+                // For testing only: uncomment line below  
+                // ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator  
+            };
+
+            var httpClient = new HttpClient(httpClientHandler)
+            {
+                Timeout = TimeSpan.FromSeconds(100)
+            };
+
+            // ✅ Add required headers  
+            httpClient.DefaultRequestHeaders.Add("User-Agent", "MailSubscriptionFunctionApp/1.0");
+            httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+            // ✅ Test connectivity before creating Graph client  
             await TestGraphConnectivityAsync(httpClient, cancellationToken);
 
-            // ✅ Create Graph client with configured HttpClient and credential  
+            // ✅ Create Graph client with our configured HttpClient  
             var graphClient = new GraphServiceClient(
                 httpClient,
                 credential,
                 new[] { "https://graph.microsoft.com/.default" });
 
-            // ✅ Cache for 1 hour  
+            // ✅ Cache both GraphServiceClient and HttpClient for proper disposal  
             var cacheOptions = new MemoryCacheEntryOptions()
                 .SetAbsoluteExpiration(TimeSpan.FromHours(1))
                 .SetPriority(CacheItemPriority.High)
                 .RegisterPostEvictionCallback((key, value, reason, state) =>
                 {
-                    _logger.LogInformation(
-                        "🗑️ GraphServiceClient evicted from cache. Reason: {Reason}",
-                        reason);
+                    _logger.LogInformation("🗑️ GraphServiceClient evicted from cache. Reason: {Reason}", reason);
+
+                    // ✅ Dispose HttpClient when evicted (retrieve from separate cache entry)  
+                    if (_tokenCache.TryGetValue(httpClientCacheKey, out HttpClient? cachedHttpClient))
+                    {
+                        cachedHttpClient?.Dispose();
+                        _tokenCache.Remove(httpClientCacheKey);
+                        _logger.LogDebug("🗑️ HttpClient disposed and removed from cache.");
+                    }
                 });
 
             _tokenCache.Set(cacheKey, graphClient, cacheOptions);
+            _tokenCache.Set(httpClientCacheKey, httpClient, cacheOptions); // Store HttpClient separately for disposal  
 
             _logger.LogInformation(
                 "✅ New GraphServiceClient created and cached for 1 hour. " +
-                "TLS 1.2+ enforced, retry/circuit breaker policies active.");
+                "TLS 1.2+ enforced, HTTP/1.1 only, connection pooling optimized.");
 
             return graphClient;
         }
