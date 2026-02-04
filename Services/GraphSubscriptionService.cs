@@ -9,6 +9,7 @@ using Microsoft.Graph.Models;
 using Microsoft.Graph.Models.ODataErrors;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Threading;
@@ -92,6 +93,9 @@ namespace MailSubscriptionFunctionApp.Services
 
             try
             {
+                // ✅ DEBUG: Test raw request to see actual error response  
+                await TestSubscriptionCreationRawAsync(userId, cancellationToken);
+
                 // ✅ Create subscription via Microsoft Graph API  
                 var created = await graphClient.Subscriptions
                     .PostAsync(subscription, cancellationToken: cancellationToken);
@@ -118,20 +122,32 @@ namespace MailSubscriptionFunctionApp.Services
                 var errorCode = odataEx.Error?.Code ?? "Unknown";
                 var errorMessage = odataEx.Error?.Message ?? odataEx.Message;
 
+                // ✅ NEW: Log all error details  
+                var errorDetails = odataEx.Error?.InnerError?.AdditionalData;
+                var errorTarget = odataEx.Error?.Target;
+
                 _logger.LogError(
                     odataEx,
-                    "❌ Graph API error for UserId: {UserId}. Error Code: {ErrorCode}, Message: {ErrorMessage}",
-                    userId, errorCode, errorMessage);
+                    "❌ Graph API error for UserId: {UserId}. " +
+                    "Error Code: {ErrorCode}, " +
+                    "Message: {ErrorMessage}, " +
+                    "Target: {Target}, " +
+                    "Details: {Details}",
+                    userId, errorCode, errorMessage, errorTarget,
+                    errorDetails != null ? string.Join(", ", errorDetails.Select(kvp => $"{kvp.Key}={kvp.Value}")) : "None");
 
                 _telemetry.TrackException(odataEx, new Dictionary<string, string>
                 {
                     { "Operation", "CreateMailSubscriptionAsync" },
                     { "UserId", userId },
-                    { "ErrorCode", errorCode }
+                    { "ErrorCode", errorCode },
+                    { "ErrorMessage", errorMessage },
+                    { "ErrorTarget", errorTarget ?? "Unknown" }
                 });
 
                 throw new InvalidOperationException(
-                    $"Failed to create Graph subscription for user {userId}. Error: {errorMessage}",
+                    $"Failed to create Graph subscription for user {userId}. " +
+                    $"Error Code: {errorCode}, Message: {errorMessage}, Target: {errorTarget}",
                     odataEx);
             }
             catch (HttpRequestException httpEx)
@@ -186,6 +202,89 @@ namespace MailSubscriptionFunctionApp.Services
                 });
 
                 throw;
+            }
+        }
+
+        /// <summary>  
+        /// DEBUG ONLY: Test subscription creation with raw HttpClient to see full error response  
+        /// </summary>  
+        private async Task<string> TestSubscriptionCreationRawAsync(
+            string userId,
+            CancellationToken cancellationToken)
+        {
+            // ✅ Create credential to get access token  
+            var clientId = _config["AzureAd:ClientId"]
+                ?? throw new InvalidOperationException("AzureAd:ClientId is not configured.");
+            var tenantId = _config["AzureAd:TenantId"]
+                ?? throw new InvalidOperationException("AzureAd:TenantId is not configured.");
+            var clientSecret = _config["AzureAd:ClientSecret"]
+                ?? throw new InvalidOperationException("AzureAd:ClientSecret is not configured.");
+
+            var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+
+            // ✅ Get access token  
+            var tokenRequestContext = new Azure.Core.TokenRequestContext(
+                new[] { "https://graph.microsoft.com/.default" });
+            var accessTokenResult = await credential.GetTokenAsync(tokenRequestContext, cancellationToken);
+
+            // ✅ Create HttpClient with TLS 1.2+  
+            var httpClientHandler = new HttpClientHandler
+            {
+                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                              System.Security.Authentication.SslProtocols.Tls13,
+                MaxConnectionsPerServer = 10,
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip |
+                                        System.Net.DecompressionMethods.Deflate,
+                UseCookies = false,
+                UseProxy = false,
+                AllowAutoRedirect = true
+            };
+
+            var httpClient = new HttpClient(httpClientHandler);
+            httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessTokenResult.Token}");
+            httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+            var notificationUrl = _config["Graph:NotificationUrl"];
+            var clientState = GenerateSecureClientState();
+
+            var payload = new
+            {
+                changeType = "created",
+                notificationUrl = notificationUrl,
+                resource = $"/users/{userId}/messages",
+                expirationDateTime = DateTime.UtcNow.AddHours(48).ToString("o"),
+                clientState = clientState
+            };
+
+            var jsonPayload = System.Text.Json.JsonSerializer.Serialize(payload);
+            var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+
+            _logger.LogInformation("🔍 Sending raw POST to Graph API with payload: {Payload}", jsonPayload);
+
+            try
+            {
+                var response = await httpClient.PostAsync(
+                    "https://graph.microsoft.com/v1.0/subscriptions",
+                    content,
+                    cancellationToken);
+
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+
+                _logger.LogInformation(
+                    "📥 Graph API Raw Response: Status={Status}, Body={Body}",
+                    (int)response.StatusCode,
+                    responseBody);
+
+                return responseBody;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Raw HTTP request failed: {Message}", ex.Message);
+                throw;
+            }
+            finally
+            {
+                httpClient.Dispose();
             }
         }
 
