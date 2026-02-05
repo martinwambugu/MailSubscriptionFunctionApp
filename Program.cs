@@ -20,9 +20,6 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 
-// ✅ CRITICAL: Disable HTTP/2 to fix "connection forcibly closed" errors  
-AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2Support", false);
-AppContext.SetSwitch("System.Net.Http.UseSocketsHttpHandler", false);
 // ✅ CRITICAL: Force TLS 1.2+ BEFORE any HTTP calls  
 // This must be the FIRST executable code in the application  
 ServicePointManager.SecurityProtocol =
