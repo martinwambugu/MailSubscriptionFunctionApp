@@ -73,12 +73,11 @@ namespace MailSubscriptionFunctionApp.Infrastructure
                 MaxAutoPrepare = 20,                // ✅ Auto-prepare frequently used commands  
                 AutoPrepareMinUsages = 2,           // ✅ Prepare after 2 usages  
 
-                // Reliability settings  
-                KeepAlive = 30,                     // 30 seconds keep-alive 
+                // Reliability settings
+                KeepAlive = 30,                     // 30 seconds keep-alive
 
-                // Security settings  
-                SslMode = SslMode.Require,          // ✅ Require SSL/TLS encryption  
-                TrustServerCertificate = false      // ✅ Validate server certificate (production-safe)  
+                // Security settings
+                SslMode = SslMode.Require           // ✅ Require SSL/TLS encryption (certificate validation automatic in Npgsql 10.0+)
             };
 
             _connectionString = builder.ToString();

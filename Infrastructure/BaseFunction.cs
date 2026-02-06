@@ -24,25 +24,25 @@ namespace MailSubscriptionFunctionApp.Infrastructure
 
         #region Logging Helpers  
 
-        /// <summary>  
-        /// Logs the start of a function execution.  
-        /// </summary>  
-        /// <param name="functionName">The function name.</param>  
-        /// <param name="parameters">Optional parameters for logging.</param>  
-        protected void LogStart(string functionName, object parameters = null)
+        /// <summary>
+        /// Logs the start of a function execution.
+        /// </summary>
+        /// <param name="functionName">The function name.</param>
+        /// <param name="parameters">Optional parameters for logging.</param>
+        protected void LogStart(string functionName, object? parameters = null)
         {
-            _logger.LogInformation("▶️ Starting {FunctionName} with params {@Params}", functionName, parameters);
+            _logger.LogInformation("▶️ Starting {FunctionName} with params {@Params}", functionName, parameters ?? new { });
             _telemetry.TrackEvent($"{functionName}_Start");
         }
 
-        /// <summary>  
-        /// Logs the end of a function execution.  
-        /// </summary>  
-        /// <param name="functionName">The function name.</param>  
-        /// <param name="result">Optional result for logging.</param>  
-        protected void LogEnd(string functionName, object result = null)
+        /// <summary>
+        /// Logs the end of a function execution.
+        /// </summary>
+        /// <param name="functionName">The function name.</param>
+        /// <param name="result">Optional result for logging.</param>
+        protected void LogEnd(string functionName, object? result = null)
         {
-            _logger.LogInformation("⏹ Finished {FunctionName} with result {@Result}", functionName, result);
+            _logger.LogInformation("⏹ Finished {FunctionName} with result {@Result}", functionName, result ?? new { });
             _telemetry.TrackEvent($"{functionName}_End");
         }
 

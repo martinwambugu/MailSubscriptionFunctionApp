@@ -162,14 +162,14 @@ namespace MailSubscriptionFunctionApp.Services
             }
         }
 
-        /// <summary>  
-        /// Gets or creates a cached <see cref="GraphServiceClient"/> instance with optimized settings.  
-        /// </summary>  
-        /// <remarks>  
-        /// The GraphServiceClient is cached for 50 minutes (typical token lifetime minus buffer).  
-        /// Uses Azure AD client credentials with automatic token refresh.  
-        /// </remarks>  
-        private async Task<GraphServiceClient> GetOrCreateGraphClientAsync(
+        /// <summary>
+        /// Gets or creates a cached <see cref="GraphServiceClient"/> instance with optimized settings.
+        /// </summary>
+        /// <remarks>
+        /// The GraphServiceClient is cached for 50 minutes (typical token lifetime minus buffer).
+        /// Uses Azure AD client credentials with automatic token refresh.
+        /// </remarks>
+        private Task<GraphServiceClient> GetOrCreateGraphClientAsync(
             CancellationToken cancellationToken)
         {
             const string cacheKey = "GraphServiceClient";
@@ -177,7 +177,7 @@ namespace MailSubscriptionFunctionApp.Services
             if (_tokenCache.TryGetValue(cacheKey, out GraphServiceClient? cachedClient) && cachedClient != null)
             {
                 _logger.LogDebug("✅ Using cached GraphServiceClient instance.");
-                return cachedClient;
+                return Task.FromResult(cachedClient);
             }
 
             _logger.LogInformation("🔧 Creating new GraphServiceClient instance...");
@@ -261,7 +261,7 @@ namespace MailSubscriptionFunctionApp.Services
                 "✅ New GraphServiceClient created and cached for 50 minutes. " +
                 "TLS 1.2+/1.3 enforced, HTTP/2 enabled with HTTP/1.1 fallback.");
 
-            return graphClient;
+            return Task.FromResult(graphClient);
         }
 
         /// <summary>  
