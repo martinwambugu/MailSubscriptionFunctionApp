@@ -36,5 +36,6 @@ namespace MailSubscriptionFunctionApp.Models
 
         /// <summary>Azure AD application ID used to create the subscription.</summary>  
         public string? ApplicationId { get; set; }
+
     }
 }

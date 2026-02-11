@@ -73,31 +73,26 @@ namespace MailSubscriptionFunctionApp.Services
 
         /// <inheritdoc/>  
         public async Task<MailSubscription> CreateMailSubscriptionAsync(
-            string userId,
-            CancellationToken cancellationToken = default)
+     string userId,
+     CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(userId, nameof(userId));
 
-            _logger.LogInformation(
-                "Creating Microsoft Graph subscription for UserId: {UserId}",
-                userId);
-
-            _telemetry.TrackEvent("GraphSubscription_Create_Start", new Dictionary<string, string>
-            {
-                { "UserId", userId }
-            });
-
             var graphClient = await GetOrCreateGraphClientAsync(cancellationToken);
-
             var notificationUrl = ValidateAndGetNotificationUrl();
-            var expirationHours = _config.GetValue<int>("Graph:SubscriptionExpirationHours", 48);
+
+            // ✅ FIX: Enforce maximum expiration time  
+            var expirationMinutes = Math.Min(
+                _config.GetValue<int>("Graph:SubscriptionExpirationMinutes", 2880),
+                4230 // Maximum for mail subscriptions  
+            );
 
             var subscription = new Subscription
             {
                 ChangeType = "created",
                 Resource = $"/users/{userId}/messages",
                 NotificationUrl = notificationUrl,
-                ExpirationDateTime = DateTime.UtcNow.AddHours(expirationHours),
+                ExpirationDateTime = DateTimeOffset.UtcNow.AddMinutes(expirationMinutes), // ✅ Use DateTimeOffset  
                 ClientState = GenerateSecureClientState()
             };
 
@@ -113,51 +108,15 @@ namespace MailSubscriptionFunctionApp.Services
                 }
 
                 _logger.LogInformation(
-                    "✅ Graph subscription created successfully. " +
-                    "SubscriptionId: {SubscriptionId}, Resource: {Resource}, ExpiresAt: {ExpiresAt:O}",
+                    "✅ Graph subscription created. SubscriptionId: {SubscriptionId}, ExpiresAt: {ExpiresAt:O}",
                     created.Id,
-                    subscription.Resource,
                     created.ExpirationDateTime);
-
-                _telemetry.TrackEvent("GraphSubscription_Create_Success", new Dictionary<string, string>
-                {
-                    { "UserId", userId },
-                    { "SubscriptionId", created.Id },
-                    { "Resource", subscription.Resource ?? "Unknown" },
-                    { "ExpiresAt", created.ExpirationDateTime?.ToString("O") ?? "Unknown" }
-                });
 
                 return MapToMailSubscription(created, userId);
             }
             catch (ODataError odataEx)
             {
                 HandleODataError(odataEx, userId, "CreateMailSubscriptionAsync");
-                throw; // Never reached due to throw in HandleODataError  
-            }
-            catch (HttpRequestException httpEx)
-            {
-                HandleHttpRequestException(httpEx, userId, "CreateMailSubscriptionAsync");
-                throw;
-            }
-            catch (ServiceException svcEx)
-            {
-                HandleServiceException(svcEx, userId, "CreateMailSubscriptionAsync");
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(
-                    ex,
-                    "❌ Unexpected error creating Graph subscription for UserId: {UserId}",
-                    userId);
-
-                _telemetry.TrackException(ex, new Dictionary<string, string>
-                {
-                    { "Operation", "CreateMailSubscriptionAsync" },
-                    { "UserId", userId },
-                    { "ExceptionType", ex.GetType().Name }
-                });
-
                 throw;
             }
         }
@@ -170,7 +129,7 @@ namespace MailSubscriptionFunctionApp.Services
         /// Uses Azure AD client credentials with automatic token refresh.
         /// </remarks>
         private Task<GraphServiceClient> GetOrCreateGraphClientAsync(
-            CancellationToken cancellationToken)
+    CancellationToken cancellationToken)
         {
             const string cacheKey = "GraphServiceClient";
 
@@ -198,27 +157,16 @@ namespace MailSubscriptionFunctionApp.Services
                     AuthorityHost = AzureAuthorityHosts.AzurePublicCloud
                 });
 
-            var httpClientHandler = new SocketsHttpHandler
+            // ✅ FIX: Use HttpClientHandler instead of SocketsHttpHandler  
+            var httpClient = new HttpClient(new HttpClientHandler
             {
-                SslOptions = new System.Net.Security.SslClientAuthenticationOptions
-                {
-                    EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
-                                         System.Security.Authentication.SslProtocols.Tls13
-                },
-                PooledConnectionLifetime = TimeSpan.FromMinutes(10),
-                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
-                MaxConnectionsPerServer = 20,
                 AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
                 UseCookies = false,
                 AllowAutoRedirect = true,
-                ConnectTimeout = TimeSpan.FromSeconds(15)
-            };
-
-            var httpClient = new HttpClient(httpClientHandler)
+                MaxConnectionsPerServer = 20
+            })
             {
-                Timeout = TimeSpan.FromSeconds(100),
-                DefaultRequestVersion = HttpVersion.Version20,
-                DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher
+                Timeout = TimeSpan.FromSeconds(100)
             };
 
             httpClient.DefaultRequestHeaders.Add("User-Agent", "MailSubscriptionFunctionApp/1.0");
@@ -231,39 +179,15 @@ namespace MailSubscriptionFunctionApp.Services
 
             var cacheOptions = new MemoryCacheEntryOptions()
                 .SetAbsoluteExpiration(TimeSpan.FromMinutes(50))
-                .SetPriority(CacheItemPriority.High)
-                .RegisterPostEvictionCallback((key, value, reason, state) =>
-                {
-                    _logger.LogInformation(
-                        "🗑️ GraphServiceClient evicted from cache. Reason: {Reason}",
-                        reason);
-
-                    if (value is IDisposable disposable)
-                    {
-                        try
-                        {
-                            disposable.Dispose();
-                            _logger.LogDebug("✅ GraphServiceClient disposed successfully.");
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(
-                                ex,
-                                "⚠️ Error disposing GraphServiceClient: {Message}",
-                                ex.Message);
-                        }
-                    }
-                });
+                .SetPriority(CacheItemPriority.High);
 
             _tokenCache.Set(cacheKey, graphClient, cacheOptions);
 
             _logger.LogInformation(
-                "✅ New GraphServiceClient created and cached for 50 minutes. " +
-                "TLS 1.2+/1.3 enforced, HTTP/2 enabled with HTTP/1.1 fallback.");
+                "✅ New GraphServiceClient created. HTTP/2 enabled by default.");
 
             return Task.FromResult(graphClient);
         }
-
         /// <summary>  
         /// Validates and retrieves the notification URL from configuration.  
         /// </summary>  
