@@ -13,5 +13,8 @@ namespace MailSubscriptionFunctionApp.Interfaces
         /// </summary>  
         /// <param name="subscription">Subscription object to persist.</param>  
         Task SaveSubscriptionAsync(MailSubscription subscription, CancellationToken cancellationToken = default);
+
+        Task<string?> GetUserIdByEmailAsync(string email, CancellationToken cancellationToken = default);
+       
     }
 }

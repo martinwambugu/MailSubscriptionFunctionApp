@@ -301,6 +301,59 @@ namespace MailSubscriptionFunctionApp.Services
             }
         }
 
-       
+
+        public async Task<string?> GetUserIdByEmailAsync(
+    string email,
+    CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(email, nameof(email));
+
+            const string sql = @"  
+        SELECT id   
+        FROM orguser   
+        WHERE LOWER(userprincipalname) = LOWER(@Email)   
+           OR LOWER(mail) = LOWER(@Email)  
+        LIMIT 1;";
+
+            try
+            {
+                using var conn = await _dbFactory.CreateConnectionAsync(cancellationToken);
+
+                var command = new CommandDefinition(
+                    sql,
+                    new { Email = email },
+                    cancellationToken: cancellationToken,
+                    commandTimeout: 10
+                );
+
+                var userId = await conn.QuerySingleOrDefaultAsync<string>(command);
+
+                if (string.IsNullOrEmpty(userId))
+                {
+                    _logger.LogWarning(
+                        "⚠️ User not found for email: {Email}",
+                        email);
+                }
+                else
+                {
+                    _logger.LogDebug(
+                        "✅ Resolved email {Email} to UserId: {UserId}",
+                        email,
+                        userId);
+                }
+
+                return userId;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "❌ Error looking up user by email: {Email}",
+                    email);
+                throw;
+            }
+        }
+
+
     }
 }

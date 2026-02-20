@@ -1,4 +1,4 @@
-﻿using Azure.Monitor.OpenTelemetry.Exporter;
+using Azure.Monitor.OpenTelemetry.Exporter;
 using MailSubscriptionFunctionApp.Infrastructure;
 using MailSubscriptionFunctionApp.Interfaces;
 using MailSubscriptionFunctionApp.Middleware;
@@ -206,7 +206,7 @@ var host = new HostBuilder()
             options.Retry.BackoffType = Polly.DelayBackoffType.Exponential;
 
             // ✅ Configure circuit breaker  
-            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60); // Fixed from 30s  
+            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(90);
             options.CircuitBreaker.FailureRatio = 0.5;
             options.CircuitBreaker.MinimumThroughput = 10;
             options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(30);

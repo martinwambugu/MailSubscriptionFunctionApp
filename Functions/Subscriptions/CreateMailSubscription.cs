@@ -149,12 +149,37 @@ namespace MailSubscriptionFunctionApp.Functions.Subscriptions
 
                 _logger.LogInformation("📧 Creating subscription for UserId: {UserId}", request.UserId);
 
-                // ✅ Step 6: Create Graph subscription  
+                // ✅ Step 6: Resolve email to UUID  
+                var resolvedUserId = await _repository.GetUserIdByEmailAsync(
+                    request.UserId,
+                    cancellationToken);
+
+                if (string.IsNullOrEmpty(resolvedUserId))
+                {
+                    _logger.LogWarning(
+                        "⚠️ User not found in database for email: {Email}",
+                        request.UserId);
+
+                    return await BadRequest(
+                        req,
+                        $"User '{request.UserId}' does not exist in the system. " +
+                        "Please ensure the user is synchronized from Azure AD first.");
+                }
+
+                _logger.LogInformation(
+                    "✅ Creating subscription for UserId: {UserId} (Email: {Email})",
+                    request.UserId,
+                    resolvedUserId);
+
+                // ✅ Step 7: Create Graph subscription (use original email for Graph API)   
                 var subscription = await _graphClient.CreateMailSubscriptionAsync(
                     request.UserId,
                     cancellationToken);
 
-                // ✅ Step 7: Persist to database  
+                // ✅ Step 8: Override UserId with UUID for database storage  
+                subscription.UserId = resolvedUserId;
+
+                // ✅ Step 9: Persist to database  
                 await _repository.SaveSubscriptionAsync(subscription, cancellationToken);
 
                 _telemetry.TrackEvent("MailSubscription_Created", new Dictionary<string, string>
@@ -172,7 +197,8 @@ namespace MailSubscriptionFunctionApp.Functions.Subscriptions
                 {
                     Message = "Subscription created successfully.",
                     SubscriptionId = subscription.SubscriptionId,
-                    UserId = subscription.UserId,
+                    UserId = subscription.UserId,  // UUID  
+                    UserEmail = request.UserId,    // Email  
                     ExpirationDateTime = subscription.SubscriptionExpirationTime,
                     NotificationUrl = subscription.NotificationUrl
                 }, cancellationToken);
@@ -235,8 +261,11 @@ namespace MailSubscriptionFunctionApp.Functions.Subscriptions
         /// <summary>The unique subscription ID from Microsoft Graph.</summary>  
         public string SubscriptionId { get; set; } = string.Empty;
 
-        /// <summary>The user ID for whom the subscription was created.</summary>  
+        /// <summary>The UUID of the user in the database.</summary>  
         public string UserId { get; set; } = string.Empty;
+
+        /// <summary>The email address used for the Graph subscription.</summary>  
+        public string UserEmail { get; set; } = string.Empty;
 
         /// <summary>When the subscription expires (UTC).</summary>  
         public DateTime ExpirationDateTime { get; set; }
