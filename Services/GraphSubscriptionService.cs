@@ -1,4 +1,4 @@
-﻿using Azure.Identity;
+using Azure.Identity;
 using MailSubscriptionFunctionApp.Interfaces;
 using MailSubscriptionFunctionApp.Models;
 using Microsoft.Extensions.Caching.Memory;
@@ -69,6 +69,42 @@ namespace MailSubscriptionFunctionApp.Services
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _telemetry = telemetry ?? throw new ArgumentNullException(nameof(telemetry));
             _tokenCache = tokenCache ?? throw new ArgumentNullException(nameof(tokenCache));
+        }
+
+        /// <inheritdoc/>
+        public async Task<bool> DeleteMailSubscriptionAsync(
+            string subscriptionId,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(subscriptionId, nameof(subscriptionId));
+
+            var graphClient = await GetOrCreateGraphClientAsync(cancellationToken);
+
+            try
+            {
+                await graphClient.Subscriptions[subscriptionId].DeleteAsync(cancellationToken: cancellationToken);
+
+                _logger.LogInformation("✅ Graph subscription deleted. SubscriptionId: {SubscriptionId}", subscriptionId);
+
+                _telemetry.TrackEvent("GraphSubscription_Deleted", new Dictionary<string, string>
+                {
+                    { "SubscriptionId", subscriptionId }
+                });
+
+                return true;
+            }
+            catch (ODataError odataEx) when (odataEx.ResponseStatusCode == 404)
+            {
+                _logger.LogWarning(
+                    "⚠️ Graph subscription {SubscriptionId} not found during delete — treating as already removed.",
+                    subscriptionId);
+                return false;
+            }
+            catch (ODataError odataEx)
+            {
+                HandleODataError(odataEx, subscriptionId, nameof(DeleteMailSubscriptionAsync));
+                throw;
+            }
         }
 
         /// <inheritdoc/>  

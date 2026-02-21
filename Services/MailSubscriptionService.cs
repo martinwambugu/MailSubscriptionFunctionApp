@@ -1,4 +1,4 @@
-﻿using MailSubscriptionFunctionApp.Interfaces;
+using MailSubscriptionFunctionApp.Interfaces;
 using MailSubscriptionFunctionApp.Models;
 using Dapper;
 using Microsoft.Extensions.Logging;
@@ -301,6 +301,103 @@ namespace MailSubscriptionFunctionApp.Services
             }
         }
 
+
+        /// <inheritdoc/>  
+        public async Task<IEnumerable<MailSubscription>> GetAllSubscriptionsAsync(
+            string? userId = null,
+            CancellationToken cancellationToken = default)
+        {
+            const string sqlAll = "SELECT * FROM mailsubscriptions ORDER BY createddatetime DESC;";
+            const string sqlFiltered = "SELECT * FROM mailsubscriptions WHERE userid = @UserId ORDER BY createddatetime DESC;";
+
+            try
+            {
+                using var conn = await _dbFactory.CreateConnectionAsync(cancellationToken);
+
+                var command = userId is null
+                    ? new CommandDefinition(sqlAll, cancellationToken: cancellationToken, commandTimeout: 30)
+                    : new CommandDefinition(sqlFiltered, new { UserId = userId }, cancellationToken: cancellationToken, commandTimeout: 30);
+
+                var results = await conn.QueryAsync<MailSubscription>(command);
+
+                _logger.LogInformation("✅ Retrieved subscriptions. UserId filter: {UserId}", userId ?? "none");
+                return results;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error retrieving all subscriptions.");
+                throw;
+            }
+        }
+
+        /// <inheritdoc/>  
+        public async Task<MailSubscription?> GetSubscriptionByIdAsync(
+            string subscriptionId,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(subscriptionId, nameof(subscriptionId));
+
+            const string sql = "SELECT * FROM mailsubscriptions WHERE subscriptionid = @SubscriptionId LIMIT 1;";
+
+            try
+            {
+                using var conn = await _dbFactory.CreateConnectionAsync(cancellationToken);
+
+                var command = new CommandDefinition(
+                    sql,
+                    new { SubscriptionId = subscriptionId },
+                    cancellationToken: cancellationToken,
+                    commandTimeout: 10);
+
+                var result = await conn.QuerySingleOrDefaultAsync<MailSubscription>(command);
+
+                if (result is null)
+                    _logger.LogWarning("⚠️ Subscription not found: {SubscriptionId}", subscriptionId);
+                else
+                    _logger.LogInformation("✅ Retrieved subscription: {SubscriptionId}", subscriptionId);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error retrieving subscription {SubscriptionId}", subscriptionId);
+                throw;
+            }
+        }
+
+        /// <inheritdoc/>  
+        public async Task<bool> DeleteSubscriptionAsync(
+            string subscriptionId,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(subscriptionId, nameof(subscriptionId));
+
+            const string sql = "DELETE FROM mailsubscriptions WHERE subscriptionid = @SubscriptionId;";
+
+            try
+            {
+                using var conn = await _dbFactory.CreateConnectionAsync(cancellationToken);
+
+                var command = new CommandDefinition(
+                    sql,
+                    new { SubscriptionId = subscriptionId },
+                    cancellationToken: cancellationToken,
+                    commandTimeout: 10);
+
+                var rowsAffected = await conn.ExecuteAsync(command);
+
+                _logger.LogInformation(
+                    "✅ Delete subscription {SubscriptionId}: {RowsAffected} row(s) affected.",
+                    subscriptionId, rowsAffected);
+
+                return rowsAffected > 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error deleting subscription {SubscriptionId}", subscriptionId);
+                throw;
+            }
+        }
 
         public async Task<string?> GetUserIdByEmailAsync(
     string email,
